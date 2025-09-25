@@ -18,16 +18,11 @@ Ce dépôt propose une interface simple pour envoyer des commandes au drone, ré
 Cloner le dépôt :  
 ```bash
 git clone https://github.com/ton-utilisateur/tello-drone-controller.git
-cd tello-drone-controller
 ```
 
-Créer un environnement virtuel et installer les dépendances :  
+Installer la librairie **djitellopy** :  
 ```bash
-python -m venv venv
-source venv/bin/activate   # Linux / macOS
-venv\Scripts\activate      # Windows
-
-pip install -r requirements.txt
+pip install djitellopy
 ```
 
 ---
@@ -41,12 +36,36 @@ python main.py
 ```
 3. Suis les instructions à l’écran pour envoyer des commandes.
 
+### Exemple minimal avec `djitellopy`
+```python
+from djitellopy import Tello
+import time
+
+# Créer une instance du drone
+tello = Tello()
+
+# Connexion
+tello.connect()
+
+# Vérification de la batterie
+print(f"Batterie: {tello.get_battery()}%")
+
+# Décollage
+tello.takeoff()
+
+# Attendre 5 secondes en vol stationnaire
+time.sleep(5)
+
+# Atterrissage
+tello.land()
+```
+
 ---
 
 ## 📚 Références utiles
-
+- [djitellopy GitHub](https://github.com/damiafuentes/DJITelloPy)  
 
 ---
 
 ## ⚠️ Avertissement
-⚠️ Utiliser ce projet à vos propres risques. Assurez-vous de voler dans un environnement sûr, dégagé et conforme à la réglementation locale sur les drones.
+Utiliser ce projet à vos propres risques. Assurez-vous de voler dans un environnement sûr, dégagé et conforme à la réglementation locale sur les drones.
