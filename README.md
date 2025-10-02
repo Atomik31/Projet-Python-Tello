@@ -64,7 +64,9 @@ tello.land()
 
 ## 📚 Références utiles
 - [djitellopy GitHub](https://github.com/damiafuentes/DJITelloPy)  
-
+- https://www.computervision.zone/courses/drone-programming-course/
+- https://www.computervision.zone/pysimverse/
+- https://www.youtube.com/watch?v=LmEcyQnfpDA
 ---
 
 ## ⚠️ Avertissement
