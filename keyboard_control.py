@@ -81,6 +81,7 @@ left_right_velocity = 0
 for_back_velocity = 0
 up_down_velocity = 0
 yaw_velocity = 0
+takeoff_start_time = 0
 
 try:
     print("✓ Système prêt\n")
@@ -114,6 +115,12 @@ try:
             
             cv2.putText(frame, "CONTROLE FPS", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             cv2.putText(frame, f"Batterie: {current_battery}%", (15, 65), cv2.FONT_HERSHEY_SIMPLEX, 1.0, battery_color, 3)
+            
+            # Gérer la transition automatique après décollage
+            if taking_off and (time.time() - takeoff_start_time > 3):
+                flying = True
+                taking_off = False
+                print("✓ En vol - Contrôle activé !")
             
             if taking_off:
                 status, status_color = "DECOLLAGE...", (0, 255, 255)
@@ -153,20 +160,20 @@ try:
         yaw_velocity = 0
         
         if (key == ord('a') or key == ord('A')) and not flying and not taking_off:
-            print("🚁 Décollage...")
+            print("🚁 Décollage en cours...")
             taking_off = True
+            takeoff_start_time = time.time()
+            
+            # Thread pour envoyer la commande takeoff sans bloquer
             def takeoff_thread():
-                global flying, taking_off
                 send_command('takeoff')
-                time.sleep(5)
-                flying = True
-                taking_off = False
-                print("✓ En vol !")
+            
             threading.Thread(target=takeoff_thread, daemon=True).start()
         
         elif (key == ord('w') or key == ord('W')) and flying and not landing:
-            print("🛬 Atterrissage...")
+            print("🛬 Atterrissage en cours...")
             landing = True
+            
             def land_thread():
                 global flying, landing
                 send_command('rc 0 0 0 0', wait_response=False)
@@ -176,11 +183,12 @@ try:
                 flying = False
                 landing = False
                 print("✓ Au sol !")
+            
             threading.Thread(target=land_thread, daemon=True).start()
         
         elif key == 27:
             print("\n⚠️  Sortie...")
-            if flying:
+            if flying or taking_off:
                 print("🛬 Atterrissage automatique...")
                 send_command('rc 0 0 0 0', wait_response=False)
                 time.sleep(0.3)
@@ -188,7 +196,8 @@ try:
                 time.sleep(3)
             break
         
-        if flying and not taking_off and not landing:
+        # Contrôles actifs même pendant le décollage (après 1 seconde)
+        if (flying or (taking_off and time.time() - takeoff_start_time > 1)) and not landing:
             if key == ord('z') or key == ord('Z'):
                 for_back_velocity = speed
             elif key == ord('s') or key == ord('S'):
@@ -206,14 +215,19 @@ try:
             elif key == ord('r') or key == ord('R'):
                 yaw_velocity = -speed
             elif key == ord('p') or key == ord('P'):
+                left_right_velocity = 0
+                for_back_velocity = 0
+                up_down_velocity = 0
+                yaw_velocity = 0
                 print("⏸️  STOP")
         
-        if flying and not taking_off and not landing:
+        # Envoyer les commandes RC
+        if (flying or (taking_off and time.time() - takeoff_start_time > 1)) and not landing:
             send_command(f'rc {left_right_velocity} {for_back_velocity} {up_down_velocity} {yaw_velocity}', wait_response=False)
 
 except KeyboardInterrupt:
     print("\n\n⚠️ ARRÊT D'URGENCE")
-    if flying:
+    if flying or taking_off:
         send_command('rc 0 0 0 0', wait_response=False)
         time.sleep(0.3)
         send_command('land')
