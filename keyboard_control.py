@@ -2,6 +2,7 @@ import socket
 import cv2
 import time
 import threading
+from pynput import keyboard
 
 print("=" * 60)
 print("  CONTRÔLE MANUEL DJI TELLO - TYPE FPS")
@@ -77,16 +78,113 @@ taking_off = False
 landing = False
 frame_count = 0
 current_battery = battery
-left_right_velocity = 0
-for_back_velocity = 0
-up_down_velocity = 0
-yaw_velocity = 0
 takeoff_start_time = 0
+running = True
+
+# Dictionnaire pour maintenir l'état des touches
+keys_pressed = {
+    'z': False, 's': False,  # Avant/Arrière
+    'q': False, 'd': False,  # Gauche/Droite
+    'space': False, 'c': False,  # Haut/Bas
+    'e': False, 'r': False   # Rotation
+}
+
+# Gestionnaire de clavier avec pynput
+def on_press(key):
+    global flying, taking_off, landing, takeoff_start_time, running
+    
+    try:
+        # Touches de caractères
+        k = key.char.lower() if hasattr(key, 'char') and key.char else None
+        
+        if k == 'a' and not flying and not taking_off:
+            print("🚁 Décollage en cours...")
+            taking_off = True
+            takeoff_start_time = time.time()
+            threading.Thread(target=lambda: send_command('takeoff'), daemon=True).start()
+        
+        elif k == 'w' and flying and not landing:
+            print("🛬 Atterrissage en cours...")
+            landing = True
+            
+            def land_thread():
+                global flying, landing
+                send_command('rc 0 0 0 0', wait_response=False)
+                time.sleep(0.3)
+                send_command('land')
+                time.sleep(3)
+                flying = False
+                landing = False
+                print("✓ Au sol !")
+            
+            threading.Thread(target=land_thread, daemon=True).start()
+        
+        elif k == 'p':
+            for key_name in keys_pressed:
+                keys_pressed[key_name] = False
+            print("⏸️  STOP")
+        
+        # Touches de mouvement
+        elif k == 'z':
+            keys_pressed['z'] = True
+        elif k == 's':
+            keys_pressed['s'] = True
+        elif k == 'q':
+            keys_pressed['q'] = True
+        elif k == 'd':
+            keys_pressed['d'] = True
+        elif k == 'c':
+            keys_pressed['c'] = True
+        elif k == 'e':
+            keys_pressed['e'] = True
+        elif k == 'r':
+            keys_pressed['r'] = True
+    
+    except (AttributeError, TypeError):
+        # Touches spéciales
+        if key == keyboard.Key.space:
+            keys_pressed['space'] = True
+        elif key == keyboard.Key.esc:
+            print("\n⚠️  Sortie...")
+            if flying or taking_off:
+                print("🛬 Atterrissage automatique...")
+                send_command('rc 0 0 0 0', wait_response=False)
+                time.sleep(0.3)
+                send_command('land')
+                time.sleep(3)
+            running = False
+
+def on_release(key):
+    try:
+        k = key.char.lower() if hasattr(key, 'char') and key.char else None
+        
+        if k == 'z':
+            keys_pressed['z'] = False
+        elif k == 's':
+            keys_pressed['s'] = False
+        elif k == 'q':
+            keys_pressed['q'] = False
+        elif k == 'd':
+            keys_pressed['d'] = False
+        elif k == 'c':
+            keys_pressed['c'] = False
+        elif k == 'e':
+            keys_pressed['e'] = False
+        elif k == 'r':
+            keys_pressed['r'] = False
+    
+    except (AttributeError, TypeError):
+        if key == keyboard.Key.space:
+            keys_pressed['space'] = False
+
+# Démarrer le listener clavier dans un thread
+listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+listener.start()
 
 try:
     print("✓ Système prêt\n")
     
-    while True:
+    while running:
         ret, frame = cap.read()
         
         if ret and frame is not None:
@@ -131,6 +229,30 @@ try:
             else:
                 status, status_color = "AU SOL", (128, 128, 128)
             
+            # Calculer les vélocités selon les touches maintenues
+            left_right_velocity = 0
+            for_back_velocity = 0
+            up_down_velocity = 0
+            yaw_velocity = 0
+            
+            if (flying or (taking_off and time.time() - takeoff_start_time > 1)) and not landing:
+                if keys_pressed['z']:
+                    for_back_velocity = speed
+                if keys_pressed['s']:
+                    for_back_velocity = -speed
+                if keys_pressed['q']:
+                    left_right_velocity = -speed
+                if keys_pressed['d']:
+                    left_right_velocity = speed
+                if keys_pressed['space']:
+                    up_down_velocity = speed
+                if keys_pressed['c']:
+                    up_down_velocity = -speed
+                if keys_pressed['e']:
+                    yaw_velocity = speed
+                if keys_pressed['r']:
+                    yaw_velocity = -speed
+            
             cv2.putText(frame, f"Status: {status}", (15, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2)
             cv2.putText(frame, f"Avant/Arriere: {for_back_velocity:>4}", (15, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             cv2.putText(frame, f"Gauche/Droite: {left_right_velocity:>4}", (15, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
@@ -152,81 +274,16 @@ try:
             
             cv2.imshow("Tello - Controle FPS", frame)
         
-        key = cv2.waitKey(10) & 0xFF
-        
-        left_right_velocity = 0
-        for_back_velocity = 0
-        up_down_velocity = 0
-        yaw_velocity = 0
-        
-        if (key == ord('a') or key == ord('A')) and not flying and not taking_off:
-            print("🚁 Décollage en cours...")
-            taking_off = True
-            takeoff_start_time = time.time()
-            
-            # Thread pour envoyer la commande takeoff sans bloquer
-            def takeoff_thread():
-                send_command('takeoff')
-            
-            threading.Thread(target=takeoff_thread, daemon=True).start()
-        
-        elif (key == ord('w') or key == ord('W')) and flying and not landing:
-            print("🛬 Atterrissage en cours...")
-            landing = True
-            
-            def land_thread():
-                global flying, landing
-                send_command('rc 0 0 0 0', wait_response=False)
-                time.sleep(0.3)
-                send_command('land')
-                time.sleep(3)
-                flying = False
-                landing = False
-                print("✓ Au sol !")
-            
-            threading.Thread(target=land_thread, daemon=True).start()
-        
-        elif key == 27:
-            print("\n⚠️  Sortie...")
-            if flying or taking_off:
-                print("🛬 Atterrissage automatique...")
-                send_command('rc 0 0 0 0', wait_response=False)
-                time.sleep(0.3)
-                send_command('land')
-                time.sleep(3)
-            break
-        
-        # Contrôles actifs même pendant le décollage (après 1 seconde)
-        if (flying or (taking_off and time.time() - takeoff_start_time > 1)) and not landing:
-            if key == ord('z') or key == ord('Z'):
-                for_back_velocity = speed
-            elif key == ord('s') or key == ord('S'):
-                for_back_velocity = -speed
-            elif key == ord('q') or key == ord('Q'):
-                left_right_velocity = -speed
-            elif key == ord('d') or key == ord('D'):
-                left_right_velocity = speed
-            elif key == 32:
-                up_down_velocity = speed
-            elif key == ord('c') or key == ord('C'):
-                up_down_velocity = -speed
-            elif key == ord('e') or key == ord('E'):
-                yaw_velocity = speed
-            elif key == ord('r') or key == ord('R'):
-                yaw_velocity = -speed
-            elif key == ord('p') or key == ord('P'):
-                left_right_velocity = 0
-                for_back_velocity = 0
-                up_down_velocity = 0
-                yaw_velocity = 0
-                print("⏸️  STOP")
-        
-        # Envoyer les commandes RC
+        # Envoyer les commandes RC en continu
         if (flying or (taking_off and time.time() - takeoff_start_time > 1)) and not landing:
             send_command(f'rc {left_right_velocity} {for_back_velocity} {up_down_velocity} {yaw_velocity}', wait_response=False)
+        
+        # Petite pause pour ne pas surcharger
+        cv2.waitKey(1)
 
 except KeyboardInterrupt:
-    print("\n\n⚠️ ARRÊT D'URGENCE")
+    print("\n\n⚠️ ARRÊT D'URGENCE (Ctrl+C)")
+    running = False
     if flying or taking_off:
         send_command('rc 0 0 0 0', wait_response=False)
         time.sleep(0.3)
@@ -234,6 +291,9 @@ except KeyboardInterrupt:
         time.sleep(3)
 
 finally:
+    running = False
+    listener.stop()
+    listener.join(timeout=1)  # Attendre que le listener se termine
     send_command('rc 0 0 0 0', wait_response=False)
     cap.release()
     send_command('streamoff', wait_response=False)
