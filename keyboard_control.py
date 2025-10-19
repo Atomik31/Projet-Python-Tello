@@ -2,7 +2,13 @@ import socket
 import cv2
 import time
 import threading
+import os
+import sys
 from pynput import keyboard
+
+# Masquer les messages d'erreur FFmpeg
+os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp'
+os.environ['OPENCV_LOG_LEVEL'] = 'FATAL'
 
 print("=" * 60)
 print("  CONTRÔLE MANUEL DJI TELLO - TYPE FPS")
@@ -54,8 +60,17 @@ send_command('streamon')
 time.sleep(3)
 
 print("\n4. Ouverture du flux...")
+
+# Rediriger stderr pour masquer les erreurs FFmpeg
+stderr_backup = sys.stderr
+sys.stderr = open(os.devnull, 'w')
+
 cap = cv2.VideoCapture('udp://0.0.0.0:11111', cv2.CAP_FFMPEG)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+# Restaurer stderr après l'ouverture
+sys.stderr.close()
+sys.stderr = stderr_backup
 
 print("   Attente du flux vidéo...")
 for i in range(30):
@@ -67,12 +82,15 @@ for i in range(30):
 
 print("\n" + "=" * 60)
 print("COMMANDES (TYPE FPS):")
-print("  A=Decoller W=Atterrir Z=Avancer S=Reculer")
-print("  Q=Gauche D=Droite ESPACE=Monter C=Descendre")
-print("  E=RotDroite R=RotGauche P=Stop ESC=Quitter")
+print("  T=Decoller L=Atterrir Z=Avancer S=Reculer")
+print("  Q=Gauche D=Droite W=Monter C=Descendre")
+print("  A=RotGauche E=RotDroite P=Stop ESC=Quitter")
+print("")
+print("REGLAGE VITESSE:")
+print("  1=Lent(30) 2=Normal(50) 3=Rapide(70) 4=Max(100)")
 print("=" * 60 + "\n")
 
-speed = 50
+speed = 100
 flying = False
 taking_off = False
 landing = False
@@ -85,25 +103,25 @@ running = True
 keys_pressed = {
     'z': False, 's': False,  # Avant/Arrière
     'q': False, 'd': False,  # Gauche/Droite
-    'space': False, 'c': False,  # Haut/Bas
-    'e': False, 'r': False   # Rotation
+    'w': False, 'c': False,  # Haut/Bas
+    'a': False, 'e': False   # Rotation
 }
 
 # Gestionnaire de clavier avec pynput
 def on_press(key):
-    global flying, taking_off, landing, takeoff_start_time, running
+    global flying, taking_off, landing, takeoff_start_time, running, speed
     
     try:
         # Touches de caractères
         k = key.char.lower() if hasattr(key, 'char') and key.char else None
         
-        if k == 'a' and not flying and not taking_off:
+        if k == 't' and not flying and not taking_off:
             print("🚁 Décollage en cours...")
             taking_off = True
             takeoff_start_time = time.time()
             threading.Thread(target=lambda: send_command('takeoff'), daemon=True).start()
         
-        elif k == 'w' and flying and not landing:
+        elif k == 'l' and flying and not landing:
             print("🛬 Atterrissage en cours...")
             landing = True
             
@@ -124,6 +142,20 @@ def on_press(key):
                 keys_pressed[key_name] = False
             print("⏸️  STOP")
         
+        # Réglage de la vitesse
+        elif k == '1':
+            speed = 30
+            print(f"⚙️  Vitesse: LENTE ({speed})")
+        elif k == '2':
+            speed = 50
+            print(f"⚙️  Vitesse: NORMALE ({speed})")
+        elif k == '3':
+            speed = 70
+            print(f"⚙️  Vitesse: RAPIDE ({speed})")
+        elif k == '4':
+            speed = 100
+            print(f"⚙️  Vitesse: MAXIMUM ({speed})")
+        
         # Touches de mouvement
         elif k == 'z':
             keys_pressed['z'] = True
@@ -133,18 +165,18 @@ def on_press(key):
             keys_pressed['q'] = True
         elif k == 'd':
             keys_pressed['d'] = True
+        elif k == 'w':
+            keys_pressed['w'] = True
         elif k == 'c':
             keys_pressed['c'] = True
+        elif k == 'a':
+            keys_pressed['a'] = True
         elif k == 'e':
             keys_pressed['e'] = True
-        elif k == 'r':
-            keys_pressed['r'] = True
     
     except (AttributeError, TypeError):
         # Touches spéciales
-        if key == keyboard.Key.space:
-            keys_pressed['space'] = True
-        elif key == keyboard.Key.esc:
+        if key == keyboard.Key.esc:
             print("\n⚠️  Sortie...")
             if flying or taking_off:
                 print("🛬 Atterrissage automatique...")
@@ -166,16 +198,17 @@ def on_release(key):
             keys_pressed['q'] = False
         elif k == 'd':
             keys_pressed['d'] = False
+        elif k == 'w':
+            keys_pressed['w'] = False
         elif k == 'c':
             keys_pressed['c'] = False
+        elif k == 'a':
+            keys_pressed['a'] = False
         elif k == 'e':
             keys_pressed['e'] = False
-        elif k == 'r':
-            keys_pressed['r'] = False
     
     except (AttributeError, TypeError):
-        if key == keyboard.Key.space:
-            keys_pressed['space'] = False
+        pass
 
 # Démarrer le listener clavier dans un thread
 listener = keyboard.Listener(on_press=on_press, on_release=on_release)
@@ -208,7 +241,7 @@ try:
                 battery_color = (255, 255, 255)
             
             overlay = frame.copy()
-            cv2.rectangle(overlay, (5, 5), (550, 400), (0, 0, 0), -1)
+            cv2.rectangle(overlay, (5, 5), (550, 450), (0, 0, 0), -1)
             frame = cv2.addWeighted(overlay, 0.7, frame, 0.3, 0)
             
             cv2.putText(frame, "CONTROLE FPS", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
@@ -244,14 +277,14 @@ try:
                     left_right_velocity = -speed
                 if keys_pressed['d']:
                     left_right_velocity = speed
-                if keys_pressed['space']:
+                if keys_pressed['w']:
                     up_down_velocity = speed
                 if keys_pressed['c']:
                     up_down_velocity = -speed
+                if keys_pressed['a']:
+                    yaw_velocity = -speed
                 if keys_pressed['e']:
                     yaw_velocity = speed
-                if keys_pressed['r']:
-                    yaw_velocity = -speed
             
             cv2.putText(frame, f"Status: {status}", (15, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2)
             cv2.putText(frame, f"Avant/Arriere: {for_back_velocity:>4}", (15, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
@@ -261,16 +294,36 @@ try:
             
             cv2.line(frame, (15, 250), (535, 250), (100, 100, 100), 2)
             
-            y = 275
+            # Affichage de la vitesse actuelle
+            if speed <= 30:
+                speed_label, speed_bar_color = "LENTE", (100, 100, 255)
+            elif speed <= 50:
+                speed_label, speed_bar_color = "NORMALE", (0, 255, 255)
+            elif speed <= 70:
+                speed_label, speed_bar_color = "RAPIDE", (0, 200, 255)
+            else:
+                speed_label, speed_bar_color = "MAXIMUM", (0, 100, 255)
+            
+            cv2.putText(frame, f"Vitesse: {speed_label} ({speed})", (15, 275), cv2.FONT_HERSHEY_SIMPLEX, 0.7, speed_bar_color, 2)
+            
+            # Barre de vitesse visuelle
+            bar_width = int((speed / 100) * 520)
+            cv2.rectangle(frame, (15, 285), (535, 305), (50, 50, 50), -1)
+            cv2.rectangle(frame, (15, 285), (15 + bar_width, 305), speed_bar_color, -1)
+            cv2.rectangle(frame, (15, 285), (535, 305), (150, 150, 150), 2)
+            
+            cv2.line(frame, (15, 315), (535, 315), (100, 100, 100), 2)
+            
+            y = 340
             cv2.putText(frame, "COMMANDES:", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
             y += 30
-            cv2.putText(frame, "A=Decoller  W=Atterrir  ESC=Quitter", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+            cv2.putText(frame, "T=Decoller  L=Atterrir  ESC=Quitter", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
             y += 25
-            cv2.putText(frame, "ZQSD=Deplacer  ESPACE=Monter  C=Descendre", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+            cv2.putText(frame, "ZQSD=Deplacer  W=Monter  C=Descendre", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
             y += 25
-            cv2.putText(frame, "E=Rotation Droite  R=Rotation Gauche", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+            cv2.putText(frame, "A=Rotation Gauche  E=Rotation Droite", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
             y += 25
-            cv2.putText(frame, "P=Stop", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+            cv2.putText(frame, "P=Stop  1-4=Vitesse", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
             
             cv2.imshow("Tello - Controle FPS", frame)
         
@@ -293,7 +346,7 @@ except KeyboardInterrupt:
 finally:
     running = False
     listener.stop()
-    listener.join(timeout=1)  # Attendre que le listener se termine
+    listener.join(timeout=1)
     send_command('rc 0 0 0 0', wait_response=False)
     cap.release()
     send_command('streamoff', wait_response=False)
