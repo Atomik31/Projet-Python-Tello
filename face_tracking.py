@@ -1,17 +1,30 @@
-import cv2
-import numpy as np
 import socket
-import threading
+import cv2
 import time
+import threading
 import os
 import sys
+import numpy as np
+import pickle
+
+# FIX pour Python 3.13 - Forcer l'import de face_recognition_models
+try:
+    import face_recognition_models
+except ImportError:
+    print("Installation de face_recognition_models...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "face_recognition_models"])
+    import face_recognition_models
+
+# Maintenant on peut importer face_recognition
+import face_recognition
 
 # Masquer les messages d'erreur FFmpeg
 os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp'
 os.environ['OPENCV_LOG_LEVEL'] = 'FATAL'
 
 print("=" * 60)
-print("  TELLO FACE TRACKING AUTOMATIQUE")
+print("  TELLO - RECONNAISSANCE FACIALE AVANCÉE")
 print("=" * 60)
 
 command_socket = None
@@ -40,10 +53,30 @@ def send_command(command, tello_address=('192.168.10.1', 8889), wait_response=Tr
             print(f"Erreur: {e}")
             return None
 
-# Charger le cascade
-print("\n📦 Chargement détecteur de visages...")
-faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-print("✓ Détecteur chargé")
+# Base de données des visages
+FACES_DB_FILE = "known_faces.pkl"
+known_face_encodings = []
+known_face_names = []
+
+# Charger la base de données si elle existe
+if os.path.exists(FACES_DB_FILE):
+    with open(FACES_DB_FILE, 'rb') as f:
+        data = pickle.load(f)
+        known_face_encodings = data['encodings']
+        known_face_names = data['names']
+    print(f"\n✓ Base de données chargée : {len(known_face_names)} personne(s) enregistrée(s)")
+    for name in known_face_names:
+        print(f"  - {name}")
+else:
+    print("\n⚠️  Aucune base de données trouvée")
+
+def save_faces_database():
+    with open(FACES_DB_FILE, 'wb') as f:
+        pickle.dump({
+            'encodings': known_face_encodings,
+            'names': known_face_names
+        }, f)
+    print(f"✓ Base de données sauvegardée ({len(known_face_names)} personne(s))")
 
 init_socket()
 
@@ -66,14 +99,12 @@ time.sleep(3)
 
 print("\n4. Ouverture du flux...")
 
-# Rediriger stderr pour masquer les erreurs FFmpeg
 stderr_backup = sys.stderr
 sys.stderr = open(os.devnull, 'w')
 
 cap = cv2.VideoCapture('udp://0.0.0.0:11111', cv2.CAP_FFMPEG)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-# Restaurer stderr
 sys.stderr.close()
 sys.stderr = stderr_backup
 
@@ -86,165 +117,298 @@ for i in range(30):
     time.sleep(0.2)
 
 print("\n" + "=" * 60)
-print("FACE TRACKING AUTOMATIQUE")
+print("MODE RECONNAISSANCE FACIALE")
+print("  E = Mode Entraînement (enregistrer un visage)")
 print("  T = Décoller  L = Atterrir")
-print("  ESC ou Q = Quitter")
+print("  R = Reconnaissance ON/OFF")
+print("  D = Supprimer une personne")
+print("  Q/ESC = Quitter")
 print("=" * 60 + "\n")
 
-print("🎥 Affichage du flux vidéo...")
-print("   Appuyez sur T pour décoller quand vous êtes prêt\n")
-
-# Paramètres de tracking
+# Paramètres
 w, h = 360, 240
 fbRange = [6200, 6800]
-# PID plus agressif pour meilleure réactivité
 pid = [0.6, 0.6, 0]
 pError = 0
 running = True
 flying = False
+recognition_enabled = False
+training_mode = False
+training_name = ""
+training_images = []
+target_person = ""  # Personne à suivre
 face_locked = False
-blink_state = False
-last_blink_time = time.time()
 last_led_command = ""
+process_this_frame = True
 
-def findFace(img):
-    imgGray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Paramètres ajustés pour meilleure détection
-    # scaleFactor: 1.1 = plus sensible
-    # minNeighbors: 3 = détection plus rapide et réactive
-    faces = faceCascade.detectMultiScale(imgGray, 1.1, 3, minSize=(30, 30))
+def recognize_faces(frame):
+    global face_locked, target_person
     
-    myFaceListC = []
-    myFaceListArea = []
+    # Redimensionner pour accélérer le traitement
+    small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+    rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
     
-    for (x, y, w, h) in faces:
-        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 2)
-        cx = x + w // 2
-        cy = y + h // 2
-        area = w * h
-        cv2.circle(img, (cx, cy), 5, (0, 255, 0), cv2.FILLED)
-        myFaceListC.append([cx, cy])
-        myFaceListArea.append(area)
+    # Détecter les visages
+    face_locations = face_recognition.face_locations(rgb_small_frame)
+    face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
     
-    if len(myFaceListArea) != 0:
-        i = myFaceListArea.index(max(myFaceListArea))
-        return img, [myFaceListC[i], myFaceListArea[i]]
-    else:
-        return img, [[0, 0], 0]
+    face_names = []
+    face_locked = False
+    target_center = None
+    target_area = 0
+    
+    for face_encoding, face_location in zip(face_encodings, face_locations):
+        matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.6)
+        name = "Inconnu"
+        confidence = 0
+        
+        if len(known_face_encodings) > 0:
+            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            best_match_index = np.argmin(face_distances)
+            
+            if matches[best_match_index]:
+                name = known_face_names[best_match_index]
+                confidence = int((1 - face_distances[best_match_index]) * 100)
+        
+        face_names.append((name, confidence))
+        
+        # Si c'est la personne cible, calculer position et aire
+        if name == target_person:
+            face_locked = True
+            top, right, bottom, left = face_location
+            # Convertir en coordonnées originales
+            top *= 2
+            right *= 2
+            bottom *= 2
+            left *= 2
+            
+            cx = (left + right) // 2
+            cy = (top + bottom) // 2
+            area = (right - left) * (bottom - top)
+            
+            target_center = (cx, cy)
+            target_area = area
+    
+    return face_locations, face_names, target_center, target_area
 
-def trackFace(info, w, pid, pError):
-    global face_locked
-    area = info[1]
-    x, y = info[0]
+def track_target(center, area, w, pid, pError):
+    if center is None:
+        send_command('rc 0 0 0 0', wait_response=False)
+        return 0
+    
+    x, y = center
     fb = 0
     
     error = x - w // 2
     speed = pid[0] * error + pid[1] * (error - pError)
     speed = int(np.clip(speed, -100, 100))
     
-    # Zones de distance ajustées pour réaction plus rapide
     if area > fbRange[0] and area < fbRange[1]:
         fb = 0
     elif area > fbRange[1]:
-        fb = -25  # Reculer plus vite
+        fb = -25
     elif area < fbRange[0] and area != 0:
-        fb = 25   # Avancer plus vite
-    
-    if x == 0:
-        speed = 0
-        error = 0
-        face_locked = False
-        print("⚠️  Aucun visage détecté")
-    else:
-        face_locked = True
-        print(f"👤 Visage: X={x:3}, Aire={area:5}, Rotation={speed:4}, Avant/Arrière={fb:3}")
+        fb = 25
     
     send_command(f'rc 0 {fb} 0 {speed}', wait_response=False)
-    
     return error
 
 try:
-    # Afficher d'abord le flux vidéo
-    frame_count = 0
+    print("✓ Système prêt\n")
     
     while running:
         ret, frame = cap.read()
         
         if ret and frame is not None:
-            frame_count += 1
-            frame_small = cv2.resize(frame, (w, h))
+            display_frame = frame.copy()
             
-            # Si le drone vole, faire le tracking
-            if flying:
-                frame_small, info = findFace(frame_small)
-                pError = trackFace(info, w, pid, pError)
+            # Mode entraînement
+            if training_mode:
+                cv2.putText(display_frame, f"ENTRAÎNEMENT: {training_name}", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                cv2.putText(display_frame, f"Photos: {len(training_images)}/5", (10, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                cv2.putText(display_frame, "Appuyez sur ESPACE pour capturer", (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                 
-                # Gestion des LEDs selon l'état
-                current_time = time.time()
+                # Détecter visage pour cadrage
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                face_locations = face_recognition.face_locations(rgb_frame)
                 
+                for (top, right, bottom, left) in face_locations:
+                    cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 255, 0), 2)
+            
+            # Mode reconnaissance
+            elif recognition_enabled and flying:
+                # Traiter une frame sur deux pour optimiser
+                if process_this_frame:
+                    face_locations, face_names, target_center, target_area = recognize_faces(frame)
+                    
+                    if target_center:
+                        pError = track_target(target_center, target_area, frame.shape[1], pid, pError)
+                
+                process_this_frame = not process_this_frame
+                
+                # Afficher les résultats
+                for (top, right, bottom, left), (name, confidence) in zip(face_locations, face_names):
+                    # Ajuster coordonnées
+                    top *= 2
+                    right *= 2
+                    bottom *= 2
+                    left *= 2
+                    
+                    # Couleur selon si c'est la cible
+                    if name == target_person:
+                        color = (0, 255, 0)  # Vert pour cible
+                        thickness = 3
+                    elif name == "Inconnu":
+                        color = (0, 0, 255)  # Rouge pour inconnu
+                        thickness = 2
+                    else:
+                        color = (255, 0, 0)  # Bleu pour connu non-cible
+                        thickness = 2
+                    
+                    cv2.rectangle(display_frame, (left, top), (right, bottom), color, thickness)
+                    
+                    # Afficher nom et confiance
+                    if name != "Inconnu":
+                        text = f"{name} ({confidence}%)"
+                    else:
+                        text = name
+                    
+                    cv2.rectangle(display_frame, (left, bottom - 25), (right, bottom), color, -1)
+                    cv2.putText(display_frame, text, (left + 6, bottom - 6), 
+                               cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255), 1)
+                
+                # LED selon état
                 if face_locked:
-                    # VERT = Visage détecté et suivi
-                    new_led_command = 'EXT led 0 255 0'
-                    if new_led_command != last_led_command:
-                        send_command(new_led_command, wait_response=False)
-                        last_led_command = new_led_command
+                    new_led = 'EXT led 0 255 0'  # Vert = cible lockée
+                elif len(face_names) > 0:
+                    new_led = 'EXT led 255 165 0'  # Orange = visage détecté mais pas cible
                 else:
-                    # BLEU clignotant = Recherche de visage
-                    if current_time - last_blink_time > 0.5:
-                        blink_state = not blink_state
-                        last_blink_time = current_time
-                        
-                        if blink_state:
-                            new_led_command = 'EXT led 0 0 255'
-                        else:
-                            new_led_command = 'EXT led 0 0 0'
-                        
-                        if new_led_command != last_led_command:
-                            send_command(new_led_command, wait_response=False)
-                            last_led_command = new_led_command
+                    new_led = 'EXT led 0 0 255'  # Bleu = recherche
+                
+                if new_led != last_led_command:
+                    send_command(new_led, wait_response=False)
+                    last_led_command = new_led
             
-            # Afficher la frame en taille réduite (1440x960 au lieu de 2160x1440)
-            frame_display = cv2.resize(frame_small, (1440, 960))
-            
-            # Ajouter infos
-            if flying:
-                cv2.putText(frame_display, "FACE TRACKING - EN VOL", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            else:
-                cv2.putText(frame_display, "PRET - Appuyez sur T", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            
-            cv2.putText(frame_display, f"Batterie: {battery}%", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
-            # Afficher statut LED seulement si en vol
-            if flying:
-                if face_locked:
-                    led_status = "LED: VERT (Visage suivi)"
-                    led_color = (0, 255, 0)
+            # Infos générales
+            if not training_mode:
+                if flying:
+                    status = "EN VOL"
+                    status_color = (0, 255, 0)
                 else:
-                    led_status = "LED: BLEU (Recherche...)"
-                    led_color = (255, 100, 0)
-                cv2.putText(frame_display, led_status, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, led_color, 2)
+                    status = "AU SOL - Appuyez sur T"
+                    status_color = (255, 255, 0)
+                
+                cv2.putText(display_frame, status, (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+                cv2.putText(display_frame, f"Batterie: {battery}%", (10, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+                if recognition_enabled:
+                    reco_text = f"Reconnaissance: ON (Cible: {target_person})"
+                    reco_color = (0, 255, 0)
+                else:
+                    reco_text = "Reconnaissance: OFF"
+                    reco_color = (128, 128, 128)
+                cv2.putText(display_frame, reco_text, (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, reco_color, 2)
             
-            cv2.putText(frame_display, "T=Decoller  L=Atterrir  Q/ESC=Quitter", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            cv2.imshow("Tello Face Tracking", frame_display)
+            # Afficher
+            display_frame = cv2.resize(display_frame, (1440, 960))
+            cv2.imshow("Tello - Reconnaissance Faciale", display_frame)
         
         key = cv2.waitKey(1) & 0xFF
         
-        # Touche T pour décoller
-        if (key == ord('t') or key == ord('T')) and not flying:
-            print("\n🚁 Décollage en cours...")
+        # Mode Entraînement
+        if key == ord('e') or key == ord('E'):
+            if not training_mode:
+                name = input("\n👤 Entrez le nom de la personne à enregistrer: ")
+                if name:
+                    training_mode = True
+                    training_name = name
+                    training_images = []
+                    print(f"📸 Mode entraînement activé pour: {name}")
+                    print("   Prenez 5 photos de face sous différents angles")
+                    print("   Appuyez sur ESPACE pour capturer")
+        
+        # Capturer photo en mode entraînement
+        elif key == 32 and training_mode:  # ESPACE
+            if len(training_images) < 5:
+                training_images.append(frame.copy())
+                print(f"   ✓ Photo {len(training_images)}/5 capturée")
+                
+                if len(training_images) == 5:
+                    print("\n🔄 Traitement des images...")
+                    
+                    # Extraire les encodages
+                    encodings = []
+                    for img in training_images:
+                        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        face_encodings = face_recognition.face_encodings(rgb)
+                        if face_encodings:
+                            encodings.append(face_encodings[0])
+                    
+                    if encodings:
+                        # Calculer l'encodage moyen
+                        avg_encoding = np.mean(encodings, axis=0)
+                        known_face_encodings.append(avg_encoding)
+                        known_face_names.append(training_name)
+                        save_faces_database()
+                        
+                        print(f"✓ {training_name} enregistré avec succès !")
+                        target_person = training_name
+                    else:
+                        print("❌ Aucun visage détecté dans les images")
+                    
+                    training_mode = False
+                    training_name = ""
+                    training_images = []
+        
+        # Activer/Désactiver reconnaissance
+        elif key == ord('r') or key == ord('R'):
+            if len(known_face_encodings) == 0:
+                print("⚠️  Aucune personne enregistrée ! Utilisez 'E' pour entraîner")
+            else:
+                recognition_enabled = not recognition_enabled
+                if recognition_enabled and not target_person:
+                    # Sélectionner la première personne par défaut
+                    target_person = known_face_names[0]
+                print(f"🔍 Reconnaissance: {'ACTIVÉE' if recognition_enabled else 'DÉSACTIVÉE'}")
+                if recognition_enabled:
+                    print(f"   Cible: {target_person}")
+        
+        # Supprimer une personne
+        elif key == ord('d') or key == ord('D'):
+            if len(known_face_names) > 0:
+                print("\n📋 Personnes enregistrées:")
+                for i, name in enumerate(known_face_names):
+                    print(f"   {i+1}. {name}")
+                try:
+                    choice = int(input("Numéro à supprimer (0 pour annuler): "))
+                    if 0 < choice <= len(known_face_names):
+                        removed = known_face_names.pop(choice - 1)
+                        known_face_encodings.pop(choice - 1)
+                        save_faces_database()
+                        print(f"✓ {removed} supprimé")
+                        if target_person == removed:
+                            target_person = known_face_names[0] if known_face_names else ""
+                except:
+                    print("Annulé")
+        
+        # Décoller
+        elif (key == ord('t') or key == ord('T')) and not flying:
+            print("\n🚁 Décollage...")
             send_command('takeoff')
             time.sleep(5)
-            
-            print("⬆️  Montée...")
             send_command('rc 0 0 25 0', wait_response=False)
             time.sleep(2.2)
             send_command('rc 0 0 0 0', wait_response=False)
-            
             flying = True
-            print("✓ Tracking activé !\n")
+            print("✓ En vol !")
         
-        # Touche L pour atterrir
+        # Atterrir
         elif (key == ord('l') or key == ord('L')) and flying:
             print("\n🛬 Atterrissage...")
             send_command('rc 0 0 0 0', wait_response=False)
@@ -255,7 +419,7 @@ try:
             flying = False
             print("✓ Au sol !")
         
-        # Touche Q ou ESC pour quitter
+        # Quitter
         elif key == ord('q') or key == 27:
             print("\n⚠️  Sortie...")
             running = False
@@ -273,9 +437,7 @@ finally:
         send_command('land')
         time.sleep(3)
     
-    # Éteindre la LED
     send_command('EXT led 0 0 0', wait_response=False)
-    
     cap.release()
     send_command('streamoff', wait_response=False)
     if command_socket:
