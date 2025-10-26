@@ -88,6 +88,7 @@ print("  A=RotGauche E=RotDroite P=Stop ESC=Quitter")
 print("")
 print("REGLAGE VITESSE:")
 print("  1=Lent(30) 2=Normal(50) 3=Rapide(70) 4=Max(100)")
+print("  H=Masquer/Afficher HUD")
 print("=" * 60 + "\n")
 
 speed = 100
@@ -98,6 +99,7 @@ frame_count = 0
 current_battery = battery
 takeoff_start_time = 0
 running = True
+show_hud = True  # Toggle pour afficher/masquer l'interface
 
 # Dictionnaire pour maintenir l'état des touches
 keys_pressed = {
@@ -109,7 +111,7 @@ keys_pressed = {
 
 # Gestionnaire de clavier avec pynput
 def on_press(key):
-    global flying, taking_off, landing, takeoff_start_time, running, speed
+    global flying, taking_off, landing, takeoff_start_time, running, speed, show_hud
     
     try:
         # Touches de caractères
@@ -141,6 +143,10 @@ def on_press(key):
             for key_name in keys_pressed:
                 keys_pressed[key_name] = False
             print("⏸️  STOP")
+        
+        elif k == 'h':
+            show_hud = not show_hud
+            print(f"{'✓' if show_hud else '✗'} HUD {'Visible' if show_hud else 'Masqué'}")
         
         # Réglage de la vitesse
         elif k == '1':
@@ -240,13 +246,6 @@ try:
             except:
                 battery_color = (255, 255, 255)
             
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (5, 5), (550, 450), (0, 0, 0), -1)
-            frame = cv2.addWeighted(overlay, 0.7, frame, 0.3, 0)
-            
-            cv2.putText(frame, "CONTROLE FPS", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-            cv2.putText(frame, f"Batterie: {current_battery}%", (15, 65), cv2.FONT_HERSHEY_SIMPLEX, 1.0, battery_color, 3)
-            
             # Gérer la transition automatique après décollage
             if taking_off and (time.time() - takeoff_start_time > 3):
                 flying = True
@@ -254,13 +253,13 @@ try:
                 print("✓ En vol - Contrôle activé !")
             
             if taking_off:
-                status, status_color = "DECOLLAGE...", (0, 255, 255)
+                status, status_color = "DECOLLAGE", (0, 255, 255)
             elif landing:
-                status, status_color = "ATTERRISSAGE...", (0, 255, 255)
+                status, status_color = "ATTERRISSAGE", (0, 255, 255)
             elif flying:
-                status, status_color = "EN VOL", (0, 255, 0)
+                status, status_color = "VOL", (0, 255, 0)
             else:
-                status, status_color = "AU SOL", (128, 128, 128)
+                status, status_color = "SOL", (128, 128, 128)
             
             # Calculer les vélocités selon les touches maintenues
             left_right_velocity = 0
@@ -286,44 +285,54 @@ try:
                 if keys_pressed['e']:
                     yaw_velocity = speed
             
-            cv2.putText(frame, f"Status: {status}", (15, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2)
-            cv2.putText(frame, f"Avant/Arriere: {for_back_velocity:>4}", (15, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            cv2.putText(frame, f"Gauche/Droite: {left_right_velocity:>4}", (15, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            cv2.putText(frame, f"Haut/Bas:      {up_down_velocity:>4}", (15, 205), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            cv2.putText(frame, f"Rotation:      {yaw_velocity:>4}", (15, 235), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            
-            cv2.line(frame, (15, 250), (535, 250), (100, 100, 100), 2)
-            
-            # Affichage de la vitesse actuelle
-            if speed <= 30:
-                speed_label, speed_bar_color = "LENTE", (100, 100, 255)
-            elif speed <= 50:
-                speed_label, speed_bar_color = "NORMALE", (0, 255, 255)
-            elif speed <= 70:
-                speed_label, speed_bar_color = "RAPIDE", (0, 200, 255)
+            # ========== INTERFACE OPTIMISÉE ==========
+            if show_hud:
+                # --- COIN SUPÉRIEUR GAUCHE : Infos essentielles ---
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (5, 5), (220, 125), (0, 0, 0), -1)
+                frame = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
+                
+                cv2.putText(frame, f"BAT: {current_battery}%", (15, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, battery_color, 2)
+                cv2.putText(frame, f"Status: {status}", (15, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
+                
+                # Vitesse avec icône
+                if speed <= 30:
+                    speed_label = "LENT"
+                elif speed <= 50:
+                    speed_label = "NORM"
+                elif speed <= 70:
+                    speed_label = "RAPID"
+                else:
+                    speed_label = "MAX"
+                
+                cv2.putText(frame, f"Vitesse: {speed_label}", (15, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+                
+                # Barre de vitesse compacte
+                bar_width = int((speed / 100) * 200)
+                cv2.rectangle(frame, (15, 100), (215, 115), (50, 50, 50), -1)
+                cv2.rectangle(frame, (15, 100), (15 + bar_width, 115), (0, 255, 255), -1)
+                cv2.rectangle(frame, (15, 100), (215, 115), (150, 150, 150), 1)
+                
+                # --- BAS DE L'ÉCRAN : Aide compacte (toggle avec H) ---
+                overlay3 = frame.copy()
+                cv2.rectangle(overlay3, (5, 680), (955, 715), (0, 0, 0), -1)
+                frame = cv2.addWeighted(overlay3, 0.5, frame, 0.5, 0)
+                
+                cv2.putText(frame, "T:Decol L:Atterir ZQSD:Deplac WC:Haut/Bas AE:Rot P:Stop 1-4:Vitesse H:HUD ESC:Quit", 
+                           (10, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
             else:
-                speed_label, speed_bar_color = "MAXIMUM", (0, 100, 255)
-            
-            cv2.putText(frame, f"Vitesse: {speed_label} ({speed})", (15, 275), cv2.FONT_HERSHEY_SIMPLEX, 0.7, speed_bar_color, 2)
-            
-            # Barre de vitesse visuelle
-            bar_width = int((speed / 100) * 520)
-            cv2.rectangle(frame, (15, 285), (535, 305), (50, 50, 50), -1)
-            cv2.rectangle(frame, (15, 285), (15 + bar_width, 305), speed_bar_color, -1)
-            cv2.rectangle(frame, (15, 285), (535, 305), (150, 150, 150), 2)
-            
-            cv2.line(frame, (15, 315), (535, 315), (100, 100, 100), 2)
-            
-            y = 340
-            cv2.putText(frame, "COMMANDES:", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-            y += 30
-            cv2.putText(frame, "T=Decoller  L=Atterrir  ESC=Quitter", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-            y += 25
-            cv2.putText(frame, "ZQSD=Deplacer  W=Monter  C=Descendre", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-            y += 25
-            cv2.putText(frame, "A=Rotation Gauche  E=Rotation Droite", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-            y += 25
-            cv2.putText(frame, "P=Stop  1-4=Vitesse", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+                # Mode minimal : juste batterie et status
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (5, 5), (150, 65), (0, 0, 0), -1)
+                frame = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
+                
+                cv2.putText(frame, f"BAT: {current_battery}%", (15, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, battery_color, 2)
+                cv2.putText(frame, status, (15, 55), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 2)
             
             cv2.imshow("Tello - Controle FPS", frame)
         
